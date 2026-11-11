@@ -1,37 +1,37 @@
 #include "util.h"
 
-
-
-
-uint32_t round_up(uint32_t x, uint32_t n)
-{
+uint32_t round_up(uint32_t x, uint32_t n) {
 	return (uint32_t)((x + n - 1) / n) * n;
 }
 
-int read_entire_file(const char *file_path, void **data, uint32_t *size, uint32_t roundup)
-{
-	FILE *fp = NULL;
-	struct stat st = {0};
-	void *ptr = NULL;
-	uint32_t length = 0;
+int read_entire_file(const char *file_path, void **data, uint32_t *size, uint32_t roundup) {
+	FILE *fp;
+	struct stat st;
+	void *ptr;
+	uint32_t length;
 
-	if (stat(file_path, &st) != -1) {
+	if (stat(file_path, &st) != -1)
 		length = st.st_size;
-		printf("%s length: %lld\n", file_path, st.st_size);
-	}
 	else {
-		printf("bad stat %s\n", file_path);
 		*data = NULL;
 		*size = 0;
 		return -EFAULT;
 	}
 
-	ptr = malloc(round_up(length, roundup));
+	ptr = calloc(1, round_up(length, roundup) ? round_up(length, roundup) : 1);
+	if (!ptr)
+		return -ENOMEM;
 
 	fp = fopen(file_path, "rb");
-	if (!fp)
+	if (!fp) {
+		free(ptr);
 		return -EFAULT;
-	fread(ptr, 1, length, fp);
+	}
+	if (fread(ptr, 1, length, fp) != length) {
+		fclose(fp);
+		free(ptr);
+		return -EIO;
+	}
 	fclose(fp);
 
 	*data = ptr;
@@ -40,39 +40,40 @@ int read_entire_file(const char *file_path, void **data, uint32_t *size, uint32_
 	return 0;
 }
 
-int read_file(const char *file_path, void *data, uint32_t size)
-{
+int read_file(const char *file_path, void *data, uint32_t size) {
 	FILE *fp;
 	fp = fopen(file_path, "rb");
 	if (!fp)
 		return -EFAULT;
-	fread(data, 1, size, fp);
+	if (fread(data, 1, size, fp) != size) {
+		fclose(fp);
+		return -EIO;
+	}
 	fclose(fp);
 	return 0;
 }
 
-int write_file(const char *file_path, const void *data, uint32_t size)
-{
+int write_file(const char *file_path, const void *data, uint32_t size) {
 	FILE *fp;
 	fp = fopen(file_path, "wb");
 	if (!fp)
 		return -EFAULT;
-
-	fwrite(data, 1, size, fp);
+	if (fwrite(data, 1, size, fp) != size) {
+		fclose(fp);
+		return -EIO;
+	}
 	fclose(fp);
 	return 0;
 }
 
-void print_hex(const uint8_t *data, uint32_t size)
-{
+void print_hex(const uint8_t *data, uint32_t size) {
 	uint32_t i;
 	for (i = 0; i < size; ++i)
 		printf("%02X ", data[i]);
 	printf("\n");
 }
 
-uint32_t swap32(uint32_t x)
-{
+uint32_t swap32(uint32_t x) {
     x = ((x << 8) & 0xFF00FF00) | ((x >> 8) & 0xFF00FF);
     return (x << 16) | (x >> 16);
 }
@@ -81,10 +82,10 @@ uint32_t be32(uint8_t *p)
 {
 	uint32_t a;
 
-	a  = p[0] << 24;
-	a |= p[1] << 16;
-	a |= p[2] <<  8;
-	a |= p[3] <<  0;
+	a  = (uint32_t)p[0] << 24;
+	a |= (uint32_t)p[1] << 16;
+	a |= (uint32_t)p[2] <<  8;
+	a |= (uint32_t)p[3] <<  0;
 
 	return a;
 }
@@ -192,14 +193,14 @@ void elf_read_shdr(int arch64, uint8_t *shdr, struct elf_shdr *s)
 	if (arch64) {
 		s->sh_name =	  be32(shdr + 0*4);
 		s->sh_type =	  be32(shdr + 1*4);
-		s->sh_flags =	 (uint32_t)be64(shdr + 2*4);
+		s->sh_flags =	  be64(shdr + 2*4);
 		s->sh_addr =	  be64(shdr + 2*4 + 1*8);
 		s->sh_offset =	  be64(shdr + 2*4 + 2*8);
-		s->sh_size =	  (uint32_t)be64(shdr + 2*4 + 3*8);
+		s->sh_size =	  be64(shdr + 2*4 + 3*8);
 		s->sh_link =	  be32(shdr + 2*4 + 4*8);
 		s->sh_info =	  be32(shdr + 3*4 + 4*8);
-		s->sh_addralign = (uint32_t)be64(shdr + 4*4 + 4*8);
-		s->sh_entsize =   (uint32_t)be64(shdr + 4*4 + 5*8);
+		s->sh_addralign = be64(shdr + 4*4 + 4*8);
+		s->sh_entsize =   be64(shdr + 4*4 + 5*8);
 	} else {
 		s->sh_name =	  be32(shdr + 0*4);
 		s->sh_type =	  be32(shdr + 1*4);
@@ -216,17 +217,34 @@ void elf_read_shdr(int arch64, uint8_t *shdr, struct elf_shdr *s)
 
 
 
-uint32_t get_end_of_last_section(uint8_t *in)
+/* Size of the validated image; section headers pointing outside are ignored. */
+static uint32_t g_image_size;
+
+int elf_validate(uint8_t *in, uint32_t size)
 {
 	struct elf_hdr ehdr;
-	struct elf_shdr s;
-	int arch64 = elf_read_hdr(in, &ehdr);
+	int arch64;
 
-	elf_read_shdr(arch64, in + ehdr.e_shoff + (ehdr.e_shentsize * (ehdr.e_shnum-3)), &s);
+	g_image_size = 0;
+	if (size < 0x40 || be32(in) != 0x7f454c46)
+		return -1;
 
-	return (uint32_t)(s.sh_offset + s.sh_size);
+	arch64 = elf_read_hdr(in, &ehdr);
+	if (!arch64 || ehdr.e_ident[5] != 2)      /* 64-bit big-endian only */
+		return -2;
+	if (ehdr.e_shentsize != 64 || ehdr.e_shnum < 3)
+		return -3;
+	if (ehdr.e_shoff >= size || ehdr.e_shoff + (uint64_t)ehdr.e_shnum * 64 > size)
+		return -3;
+
+	g_image_size = size;
+	return 0;
 }
 
+static int section_in_image(const struct elf_shdr *s)
+{
+	return (uint64_t)s->sh_offset + (uint64_t)s->sh_size <= g_image_size;
+}
 
 uint32_t find_ra_sh(unsigned int idx, uint32_t va, uint8_t *in)
 {
@@ -235,6 +253,8 @@ uint32_t find_ra_sh(unsigned int idx, uint32_t va, uint8_t *in)
 	int arch64 = elf_read_hdr(in, &ehdr);
 
 	elf_read_shdr(arch64, in + ehdr.e_shoff + (ehdr.e_shentsize * idx), &s);
+	if (!section_in_image(&s))
+		return 0;
 
 	if (arch64)
 	{
@@ -255,6 +275,8 @@ uint32_t find_va_sh(unsigned int idx, uint32_t ra, uint8_t *in)
 	int arch64 = elf_read_hdr(in, &ehdr);
 
 	elf_read_shdr(arch64, in + ehdr.e_shoff + (ehdr.e_shentsize * idx), &s);
+	if (!section_in_image(&s))
+		return 0;
 
 	if (arch64)
 	{
@@ -270,11 +292,11 @@ uint32_t find_va_sh(unsigned int idx, uint32_t ra, uint8_t *in)
 
 uint32_t va_to_ra(uint8_t *in, uint32_t va)
 {
-	unsigned int i, result = 0;
+
 	struct elf_hdr ehdr;
 	elf_read_hdr(in, &ehdr);
 
-	
+	unsigned int i, result;
 	if (ehdr.e_shnum > 0)
 	{
 		for (i = 0; i < ehdr.e_shnum; i++)
@@ -291,11 +313,11 @@ uint32_t va_to_ra(uint8_t *in, uint32_t va)
 
 uint32_t ra_to_va(uint8_t *in, uint32_t ra)
 {
-	unsigned int i, result = 0;
+
 	struct elf_hdr ehdr;
 	elf_read_hdr(in, &ehdr);
 
-	
+	unsigned int i, result;
 	if (ehdr.e_shnum > 0)
 	{
 		for (i = 0; i < ehdr.e_shnum; i++)
@@ -329,7 +351,6 @@ uint32_t binsearch64(uint8_t * in, uint32_t size, uint64_t value)
 			return i;
 		}
 	}
-
 	return 0;
 }
 

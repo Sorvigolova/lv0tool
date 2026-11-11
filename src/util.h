@@ -1,10 +1,6 @@
 #ifndef _UTIL_H_
 #define _UTIL_H_
 
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
 #include "types.h"
 
 
@@ -34,7 +30,6 @@ struct elf_shdr {
 	uint32_t sh_entsize;
 };
 
-
 struct elf_hdr {
 	char e_ident[16];
 	uint16_t e_type;
@@ -52,6 +47,13 @@ struct elf_hdr {
 	uint16_t e_shtrndx;
 };
 
+typedef struct
+{
+	uint32_t id;
+	uint64_t start;
+	uint64_t end;
+	uint64_t size;
+} ldr_tab_entry;
 
 uint32_t round_up(uint32_t x, uint32_t n);
 
@@ -78,7 +80,7 @@ uint32_t ra_to_va(uint8_t *in, uint32_t ra);
 uint32_t va_to_ra(uint8_t *in, uint32_t va);
 uint32_t find_va_sh(unsigned int idx, uint32_t ra, uint8_t *in);
 uint32_t find_ra_sh(unsigned int idx, uint32_t va, uint8_t *in);
-uint32_t get_end_of_last_section(uint8_t *in);
+int elf_validate(uint8_t *in, uint32_t size);
 
 
 #endif
