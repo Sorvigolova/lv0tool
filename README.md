@@ -4,6 +4,7 @@ A small utility for extracting and reimporting the loader components embedded in
 a PS3 `lv0` image (3.60 and later).
 
 - Originally written by **u$er**.
+- Crypto part and cowork **Zecoxao** (2026).
 - Extraction/import rework and this README by **Sorvigolova** (2026).
 
 The original project shipped without a README or license; attribution above is
